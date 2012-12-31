@@ -13,6 +13,11 @@ class WorkerMucProtocol( common.CommonMucProtocol ):
         super( WorkerMucProtocol, self ).__init__( *args, **kwargs )
         
         self.default_rooms_check = None
+        self.default_channels = []
+        
+        if common.worker_config.has_section( 'muc' ) and common.worker_config.has_option( 'muc', 'default_channels' ):
+            raw_channels = common.worker_config.get( 'muc', 'default_channels')
+            self.default_channels = raw_channels.split(',')
 
     def connectionInitialized(self):
         super( WorkerMucProtocol, self ).connectionInitialized()
@@ -21,10 +26,10 @@ class WorkerMucProtocol( common.CommonMucProtocol ):
     def joinDefaultRooms(self):
         log.msg( 'joinDefaultRooms' )
         
-        if not len( self.my_parent.initial_room_list ):
+        if not len( self.default_channels ):
             return True
         
-        room_list = list( self.my_parent.initial_room_list )
+        room_list = list( self.default_channels )
         current_rooms = list( key.user for key in self._rooms.keys() )
                 
         for room in room_list:
@@ -73,8 +78,13 @@ class WorkerRosterProtocol( common.CommonRosterProtocol ):
     
 class WorkerClient( object ):
                 
-    def __init__( self, user, resource, password, server, port = 5222, trigger_config = False, room_list = [] ):
+    def __init__( self, user = 'worker', password = 'password' ):
         
+        resource = common.worker_config.get( 'worker', 'resource' ) 
+        server = common.worker_config.get( 'worker', 'server_ip' ) 
+        port = common.worker_config.get( 'worker', 'server_port' )
+        trigger_config = ( common.worker_config.has_option( 'worker' , 'trigger_config' ) and common.worker_config.get( 'worker', 'trigger_config' ) ) or False
+
         self.server = server
         self.port = int( port )
         
@@ -83,8 +93,6 @@ class WorkerClient( object ):
         self.jid = jid.JID( user + '@' + server + "/" + resource )
         self.factory = common.CommonClientFactory(self, password)
         self.factory.streamManager.logTraffic = True
-    
-        self.initial_room_list = room_list
     
         self.muc_client = WorkerMucProtocol( self )
         self.muc_client.setHandlerParent( self.factory.streamManager )

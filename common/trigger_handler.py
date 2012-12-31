@@ -5,7 +5,38 @@ from twisted.internet import threads, defer, reactor
 from wokkel.subprotocols import XMPPHandler
 from datetime import datetime
 from lxml import etree
+from functools import wraps
 import time, os, subprocess, ConfigParser
+
+from config import *
+
+def validateRole( func ):
+    
+    class validateRoleClass( object ):
+        
+        def __init__( self, func ):
+            self.func = func
+            
+        def __get__( self, instance, klass ):
+            
+            @wraps( self.func )
+            def wrapper( *args, **kwargs ):
+                log.msg( 'allowed_role: %s' % instance.allowed_role )
+                log.msg( 'element: %s' % args[0].name )
+                
+                if hasattr( instance, 'allowed_role' ) and len( args ) > 0:
+                    allowed_role = instance.allowed_role
+                    element = args[0]
+                    
+                    
+                    
+                
+                return self.func( instance, *args, **kwargs )
+            
+            setattr( instance, self.func.__name__, wrapper )
+            return wrapper
+        
+    return validateRoleClass( func )
 
 class TriggerException( Exception ): pass
 
@@ -235,7 +266,11 @@ class Trigger( object ):
         self.config = config
         
         self.repeat = self.config.get( 'repeat', False )
-        #self.action = options.['action']
+        
+        self.allowed_role = self.config.get( 'allowed_role', 'any' )
+        
+        if self.allowed_role not in [ 'any', 'user', 'admin' ]:
+            self.allowed_role = 'any'
     
         if not self.config.get( 'action_type', '' ) in self.action_types:
             raise TriggerException( 'invalid trigger type' )
@@ -243,10 +278,10 @@ class Trigger( object ):
         self.action = self.action_types[ self.config['action_type'] ]
         
     def check(self):
-        pass
+        raise NotImplementedError
     
     def run(self):
-        pass
+        raise NotImplementedError
         
 class ScheduledTrigger( Trigger ):
     
@@ -260,7 +295,7 @@ class ScheduledTrigger( Trigger ):
             self.min, self.hour, self.day, self.month, self.year = config['schedule'].split(' ')
         except:
             raise TriggerException( 'invalid schedule' )
-        
+    
     def check(self):
         if self.ran and not self.repeat:
             return defer.succeed( False )
@@ -444,7 +479,7 @@ class EventType( object ):
             raise TriggerException( 'invalid event type' )
         
     def matchElement(self, element):
-        pass
+        raise NotImplementedError
         
 class MessageEventType( EventType ):
     
@@ -466,7 +501,21 @@ class MessageEventType( EventType ):
         
         log.msg( 'from: %s' % element['from'] )
         log.msg( 'source: %s' % self.source_entity )
-        if not element['from'] == self.source_entity:
+        
+        if self.source_entity[0] == '@':
+            from_jid = jid.JID( element['from'] )
+            source_role = self.source_entity[1:]
+            
+            if source_role in worker_roles and from_jid.user in worker_user_roles and worker_user_roles[ from_jid.user ] in worker_roles:
+                source_role_id = worker_roles_by_id[ source_role ]
+                from_role_id = worker_user_roles[ from_jid.user ]
+                
+                if not from_role_id >= source_role_id:
+                    return defer.succeed( False )   
+            else:
+                return defer.succeed( False )
+                         
+        elif not element['from'] == self.source_entity:             
             return defer.succeed( False )
         
         def getContentResponse( response ):

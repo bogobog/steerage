@@ -111,7 +111,7 @@ class WorkerClient( object ):
         self.rpc_client = WorkerRPCProtocol( self )
         self.rpc_client.setHandlerParent( self.factory.streamManager )
         #self.rpc_client.subscribeMethod( 'assignService', self.rpc_assignService )
-        
+            
         if trigger_config:
             self.trigger_handler = common.TriggerHandler( self, trigger_config )
             self.trigger_handler.setHandlerParent( self.factory.streamManager )

@@ -6,37 +6,11 @@ from wokkel.subprotocols import XMPPHandler
 from datetime import datetime
 from lxml import etree
 from functools import wraps
+import pyinotify
 import time, os, subprocess, ConfigParser
 
 from config import *
-
-def validateRole( func ):
-    
-    class validateRoleClass( object ):
-        
-        def __init__( self, func ):
-            self.func = func
-            
-        def __get__( self, instance, klass ):
-            
-            @wraps( self.func )
-            def wrapper( *args, **kwargs ):
-                log.msg( 'allowed_role: %s' % instance.allowed_role )
-                log.msg( 'element: %s' % args[0].name )
-                
-                if hasattr( instance, 'allowed_role' ) and len( args ) > 0:
-                    allowed_role = instance.allowed_role
-                    element = args[0]
-                    
-                    
-                    
-                
-                return self.func( instance, *args, **kwargs )
-            
-            setattr( instance, self.func.__name__, wrapper )
-            return wrapper
-        
-    return validateRoleClass( func )
+from inotify_handler import INotifyHandler
 
 class TriggerException( Exception ): pass
 
@@ -45,13 +19,13 @@ class TriggerHandler( XMPPHandler ):
     timed_triggers = []
     event_triggers = []
     xpath_triggers = []
+    fs_triggers = []
     triggering_events = []
     
     def __init__(self, parent, trigger_config):
         super( TriggerHandler, self ).__init__()
         
         self.my_parent = parent        
-        #config = commonConfig.Config( trigger_config, 'triggers' )
         
         config = ConfigParser.ConfigParser()
         config.read( trigger_config )
@@ -68,10 +42,13 @@ class TriggerHandler( XMPPHandler ):
                 
             config_triggers[ options['type'] ][ section ] = options
             
-        scheduled  = config_triggers[ 'scheduled' ]
-        timed      = config_triggers[ 'timed' ]
-        event      = config_triggers[ 'event' ]
-        xpath      = config_triggers[ 'xpath' ]
+        scheduled   = config_triggers[ 'scheduled' ]
+        timed       = config_triggers[ 'timed' ]
+        event       = config_triggers[ 'event' ]
+        xpath       = config_triggers[ 'xpath' ]
+        fs          = config_triggers[ 'filesystem' ]
+        
+        log.msg( fs )
         
         for trigger in scheduled:
             self.scheduled_triggers.append( ScheduledTrigger( self, trigger, scheduled[ trigger ] ) )
@@ -85,23 +62,31 @@ class TriggerHandler( XMPPHandler ):
         for trigger in xpath:
             self.xpath_triggers.append( XpathTrigger( self, trigger, xpath[ trigger ] ) )
                 
+        for trigger in fs:
+            self.fs_triggers.append( FilesystemTrigger( self, trigger, fs[ trigger ] ) )
+            
         if len( self.scheduled_triggers ):
             reactor.callLater( 60, self.checkScheduled )
             
         if len( self.timed_triggers ):
             reactor.callLater( 60, self.checkTimed )
-            
+
+        if len( self.fs_triggers ):
+            self.inotify_handler = INotifyHandler( self.fs_triggers )
+                            
     def connectionInitialized(self):
         log.msg( 'trigger_handler: connectionInitialized' )        
         for trigger in self.event_triggers:
             log.msg( 'init checkEvent' )
             log.msg( trigger.event.type )
-            self.xmlstream.addObserver('/' + trigger.event.type, self.checkEvent, trigger = trigger )
+            
+            if trigger.event.type == 'message':
+                self.xmlstream.addObserver('/' + trigger.event.type, self.checkEvent, trigger = trigger )
             
         #for trigger in self.xpath_triggers:
         if len( self.xpath_triggers ):
             self.xmlstream.addObserver( '/*', self.checkXpathEvent )
-               
+         
     def checkEvent(self, element, trigger):
         if not len( self.event_triggers ):
             return
@@ -161,7 +146,7 @@ class TriggerHandler( XMPPHandler ):
                 trigger.check().addCallback( checkResponse, trigger )
             
         reactor.callLater( 60, self.checkTimed )      
-    
+        
     def addXpathTrigger(self, trigger):
         if not isinstance( trigger, XpathTrigger ):
             raise TriggerException( 'trigger is not an XpathTrigger' )
@@ -418,6 +403,26 @@ class XpathTrigger( Trigger ):
  
     def run(self):
         self.ran = True
+        return self.action( self )
+                                               
+class FilesystemTrigger( Trigger ):
+    filesystem_event_types = { 'create': pyinotify.IN_CREATE, 'delete': pyinotify.IN_DELETE, 'modify': pyinotify.IN_MODIFY, 'attrib': pyinotify.IN_ATTRIB }
+    
+    def __init__(self, parent, name, config):
+        Trigger.__init__(self, parent, name, config)
+        
+        self.path = config['path']
+        
+        event_types = config.get( 'filesystem_event_types', 'create,delete,modify' ).split(',')
+        self.event_types = list( FilesystemTrigger.filesystem_event_types[ etype ] for etype in event_types if etype in FilesystemTrigger.filesystem_event_types )
+        self.mask = 0
+        for et in self.event_types:
+            self.mask = self.mask | et
+    
+    def run(self):
+        log.msg( 'FilesystemTrigger: run' )
+        self.ran = True
+        self.last_run = time.time()
         return self.action( self )
                                                
 class TriggerContent( object ):

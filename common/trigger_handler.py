@@ -1,13 +1,12 @@
-from twisted.words.xish import domish, xpath
-from twisted.words.protocols.jabber import xmlstream, jid
+from wokkel.subprotocols import XMPPHandler
+import ConfigParser, subprocess, os, time
 from twisted.python import log
 from twisted.internet import threads, defer, reactor
-from wokkel.subprotocols import XMPPHandler
 from datetime import datetime
+from twisted.words.protocols.jabber import jid
+from twisted.words.xish import domish
 from lxml import etree
-from functools import wraps
 import pyinotify
-import time, os, subprocess, ConfigParser
 
 from config import *
 from inotify_handler import INotifyHandler
@@ -42,11 +41,11 @@ class TriggerHandler( XMPPHandler ):
                 
             config_triggers[ options['type'] ][ section ] = options
             
-        scheduled   = config_triggers[ 'scheduled' ]
-        timed       = config_triggers[ 'timed' ]
-        event       = config_triggers[ 'event' ]
-        xpath       = config_triggers[ 'xpath' ]
-        fs          = config_triggers[ 'filesystem' ]
+        scheduled   = config_triggers.get( 'scheduled', [] )
+        timed       = config_triggers.get( 'timed', [] )
+        event       = config_triggers.get( 'event', [] )
+        xpath       = config_triggers.get( 'xpath', [] )
+        fs          = config_triggers.get( 'filesystem', [] )
         
         log.msg( fs )
         
@@ -61,10 +60,10 @@ class TriggerHandler( XMPPHandler ):
         
         for trigger in xpath:
             self.xpath_triggers.append( XpathTrigger( self, trigger, xpath[ trigger ] ) )
-                
+           
         for trigger in fs:
             self.fs_triggers.append( FilesystemTrigger( self, trigger, fs[ trigger ] ) )
-            
+  
         if len( self.scheduled_triggers ):
             reactor.callLater( 60, self.checkScheduled )
             
@@ -73,7 +72,7 @@ class TriggerHandler( XMPPHandler ):
 
         if len( self.fs_triggers ):
             self.inotify_handler = INotifyHandler( self.fs_triggers )
-                            
+
     def connectionInitialized(self):
         log.msg( 'trigger_handler: connectionInitialized' )        
         for trigger in self.event_triggers:
@@ -95,7 +94,7 @@ class TriggerHandler( XMPPHandler ):
             log.msg( 'checkResponse: %s' % trigger.name )
             trigger.check_running = False
             if response:
-                trigger.run()
+                trigger.run( element )
         
         if not trigger.check_running:
             trigger.check_running = True
@@ -146,7 +145,7 @@ class TriggerHandler( XMPPHandler ):
                 trigger.check().addCallback( checkResponse, trigger )
             
         reactor.callLater( 60, self.checkTimed )      
-        
+    
     def addXpathTrigger(self, trigger):
         if not isinstance( trigger, XpathTrigger ):
             raise TriggerException( 'trigger is not an XpathTrigger' )
@@ -155,100 +154,16 @@ class TriggerHandler( XMPPHandler ):
         self.xpath_triggers.append( trigger )
         
         return True
-        
-def MessageAction( trigger ):
-    target_entity = jid.JID( trigger.config['action_recipient'] )
-    message_type = trigger.config['action_message_type']
-    
-    if message_type == "groupchat":
-        muc_client = trigger.parent.my_parent.muc_client
-        
-        if not muc_client._getRoom( target_entity ):
-            log.msg( 'not in room' )
-            return False
-        
-    content = ParseActionContent( trigger.config )
-    
-    def getContentResponse( response ):
-        log.msg( 'getContentResponse' )
-        msg = domish.Element( (None, 'message') )
-        msg['type'] = message_type
-        msg['to'] = target_entity.full()
-            
-        msg.addElement('body', None, response )
-        trigger.parent.xmlstream.send( msg )
-            
-    content.getContent().addCallback( getContentResponse )
-    
-def FunctionAction( trigger ):
-    target_function = trigger.action['function']
-    
-    if 'args' in trigger.action:
-        target_function( trigger, *trigger.action['args'] )
-    else:
-        target_function( trigger )
 
-    
-def ParseTriggerContent( config ):
-
-    if not 'content_type' in config:
-        return False
-    
-    ttype = config['content_type']
-        
-    if ttype == 'text':
-        return TextTriggerContent( config['content_value'] )
-    elif ttype == 'file':
-        return FileTriggerContent( config['content_value'] )
-    elif ttype == 'external':
-        args = [ config['content_value'], ]
-        if 'content_timeout' in config:
-            args.append( int( config['content_timeout'] ) )
-            return ExternalTriggerContent( *args )
-        
-    return False
-            
-def ParseActionContent( config ):
-
-    if not 'action_content_type' in config:
-        return False
-    
-    ttype = config['action_content_type']
-        
-    if ttype == 'text':
-        return TextTriggerContent( config['action_content_value'] )
-    elif ttype == 'file':
-        return FileTriggerContent( config['action_content_value'] )
-    elif ttype == 'external':
-        args = [ config['action_content_value'], ]
-        
-        if 'action_content_timeout' in config:
-            args.append( int( config['action_content_timeout'] ) )
-            
-        return ExternalTriggerContent( *args )
-        
-    return False
-    
-def ParseEvent( config ):
-    type = config['event_type']
-    
-    if not type in EventType.event_types:
-        return False
-    
-    event_class = eval( '%sEventType' % type.capitalize() )
-    
-    return event_class( config )
-    
 class Trigger( object ):
-    action_types = { 'message': MessageAction }
-    ran = False
-    check_running = False
     
-    def __init__(self, parent, name, config):
+    def __init__(self, handler, name, config):
 
-        self.parent = parent
+        self.handler = handler
         self.name = name
         self.config = config
+        self.ran = False
+        self.check_running = False
         
         self.repeat = self.config.get( 'repeat', False )
         
@@ -257,21 +172,22 @@ class Trigger( object ):
         if self.allowed_role not in [ 'any', 'user', 'admin' ]:
             self.allowed_role = 'any'
     
-        if not self.config.get( 'action_type', '' ) in self.action_types:
+        if not self.config.get( 'action_type', '' ) in action_types:
             raise TriggerException( 'invalid trigger type' )
         
-        self.action = self.action_types[ self.config['action_type'] ]
+        self.action = action_types[ self.config['action_type'] ]( self )
         
     def check(self):
         raise NotImplementedError
     
     def run(self):
         raise NotImplementedError
-        
+
 class ScheduledTrigger( Trigger ):
     
-    def __init__(self, parent, name, config):
-        Trigger.__init__(self, parent, name, config)
+    def __init__(self, handler, name, config):
+        log.msg( 'ScheduledTrigger: init' )
+        Trigger.__init__(self, handler, name, config)
         
         if not 'schedule' in config:
             raise TriggerException( 'not schedule found' )
@@ -282,6 +198,7 @@ class ScheduledTrigger( Trigger ):
             raise TriggerException( 'invalid schedule' )
     
     def check(self):
+        log.msg( 'ScheduledTrigger: check' )
         if self.ran and not self.repeat:
             return defer.succeed( False )
  
@@ -310,13 +227,15 @@ class ScheduledTrigger( Trigger ):
         return defer.succeed( False )
     
     def run(self):
+        log.msg( 'ScheduledTrigger: run' )
         self.ran = True
-        return self.action( self )
-                                    
+        return self.action.run()
+
 class TimedTrigger( Trigger ):
     
-    def __init__(self, parent, name, config):
-        Trigger.__init__(self, parent, name, config)
+    def __init__(self, hanler, name, config):
+        log.msg( 'TimedTrigger: init' )
+        Trigger.__init__(self, hanler, name, config)
         
         if not 'delay' in config:
             raise TriggerException( 'not schedule found' )
@@ -339,17 +258,20 @@ class TimedTrigger( Trigger ):
         log.msg( 'TimedTrigger: run' )
         self.ran = True
         self.last_run = time.time()
-        return self.action( self )
-    
+        return self.action.run()
+
 class EventTrigger( Trigger ):
     event_types = [ 'message', 'presence', 'iq' ]
     
-    def __init__(self, parent, name, config):
-        Trigger.__init__(self, parent, name, config)
+    def __init__(self, handler, name, config):
+        log.msg( 'EventTrigger: init' )
+        Trigger.__init__(self, handler, name, config)
         
-        self.event = ParseEvent( config )
+        self.event_type = config['event_type']
+        self.event = event_types[ self.event_type ]( config )
 
     def check(self, element):
+        log.msg( 'EventTrigger: check' )
         if self.ran and not self.repeat:
             return defer.succeed( False )
         
@@ -362,54 +284,40 @@ class EventTrigger( Trigger ):
         
         return self.event.matchElement( element ).addCallback( matchElementResponse )
     
-    def run(self):
+    def run(self, element):
+        log.msg( 'EventTrigger: run' )
         self.ran = True
-        return self.action( self )
-    
+        return self.action.run()
+
 class XpathTrigger( Trigger ):
-    action_types = { 'message': MessageAction, 'function': FunctionAction }
     
-    def __init__(self, parent, name, config):
-        Trigger.__init__(self, parent, name, config)
+    def __init__(self, handler, name, config):
+        log.msg( 'XpathTrigger: init' )
+        Trigger.__init__(self, handler, name, config)
         
         self.xpath = unicode( config['xpath'] )
         self.xquery = etree.ETXPath( config['xpath'] )
 
-        self.content = False
-        
-        if 'content' in config:
-            self.content = ParseTriggerContent( config )
-            
     def check(self, element):
+        log.msg( 'XpathTrigger: check' )
         if self.ran and not self.repeat:
             return defer.succeed( False )
         
         if not self.xquery( etree.XML( element.toXml() ) ):
             return defer.succeed( False )       
         
-        """
-        def getContentResponse( response ):
-            log.msg( 'getContentResponse' )
-            if response == str( element.body ):
-                return True
-            
-            return False
-        
-        if self.content:
-            return self.content.getContent().addCallback( getContentResponse )
-        """
-        
         return defer.succeed( True ) 
  
     def run(self):
+        log.msg( 'XpathTrigger: run' )
         self.ran = True
-        return self.action( self )
-                                               
+        return self.action.run()
+
 class FilesystemTrigger( Trigger ):
     filesystem_event_types = { 'create': pyinotify.IN_CREATE, 'delete': pyinotify.IN_DELETE, 'modify': pyinotify.IN_MODIFY, 'attrib': pyinotify.IN_ATTRIB }
     
-    def __init__(self, parent, name, config):
-        Trigger.__init__(self, parent, name, config)
+    def __init__(self, handler, name, config):
+        Trigger.__init__(self, handler, name, config)
         
         self.path = config['path']
         
@@ -423,15 +331,85 @@ class FilesystemTrigger( Trigger ):
         log.msg( 'FilesystemTrigger: run' )
         self.ran = True
         self.last_run = time.time()
-        return self.action( self )
-                                               
+        return self.action.run()
+        
+trigger_types = { 'scheduled': ScheduledTrigger, 'timed': TimedTrigger, 'event': EventTrigger, 'xpath': XpathTrigger, 'filesystem': FilesystemTrigger, }
+
+class Action( object ):
+    
+    def __init__(self, trigger):
+        self.trigger = trigger
+        self.content_type = self.trigger.config['action_content_type']
+        
+        if not self.content_type in content_types:
+            raise TriggerException( 'Invalid content type.' )
+        
+        self.content_handler = content_types[ self.content_type ]( self.trigger.config['action_content_value'] )
+     
+    def run(self):
+        raise NotImplementedError
+    
+class MessageAction( Action ):
+    
+    def __init__(self, trigger):
+        super( MessageAction, self ).__init__( trigger )
+        
+        self.recipient = self.trigger.config['action_recipient']
+        self.recipient_jid = jid.JID( self.recipient )
+        self.message_type = self.trigger.config['action_message_type']
+        
+    def run(self):
+        log.msg( 'MessageAction: run')
+        
+        if self.message_type == "groupchat":
+            muc_client = self.trigger.handler.my_parent.muc_client
+            
+            if not muc_client._getRoom( self.recipient_jid ):
+                log.msg( 'not in room' )
+                return False
+
+        def getContentResponse( response ):
+                log.msg( 'MessageAction: getContentResponse' )
+                msg = domish.Element( (None, 'message') )
+                msg['type'] = self.message_type
+                msg['to'] = self.recipient_jid.full()
+                    
+                msg.addElement('body', None, response )
+                self.trigger.handler.xmlstream.send( msg )
+                        
+        self.content_handler.getContent().addCallback( getContentResponse )     
+            
+def FunctionAction( Action ):
+    
+    def __init__(self, trigger):
+        super( FunctionAction, self ).__init__( trigger )
+        
+        self.target_function = self.trigger.config['action_function']
+        self.args = self.trigger.config['action_args']
+    
+    def run(self):
+        if len( self.args ):
+            self.target_function( self.trigger, *self.args )
+        else:
+            self.target_function( self.trigger )
+        
+action_types = { 'message': MessageAction }
+
 class TriggerContent( object ):
 
     def __init__(self, value):
         self.value = value
         
     def getContent(self):
-        pass
+        """
+        source user
+        source host
+        source resource
+        source jid
+        self jid
+        source argument
+        """
+        raise NotImplementedError
     
 class TextTriggerContent( TriggerContent ):
     
@@ -472,15 +450,17 @@ class ExternalTriggerContent( TriggerContent ):
             
             return str( proc.stdout.read() )
         
-        return threads.deferToThread( proc.wait ).addCallback( getExternalContentCallback ).addErrback( log.err )
-    
+        return threads.deferToThread( proc.wait ).addCallback( getExternalContentCallback ).addErrback( log.err )    
+
+content_types = { 'text': TextTriggerContent, 'file': FileTriggerContent, 'external': ExternalTriggerContent, }
+
 class EventType( object ):
-    event_types = [ 'message', 'xpath' ]
     
     def __init__(self, config):
         self.type = config['event_type']
+        self.value = config['content_value']
         
-        if not self.type in self.event_types:
+        if not self.type in event_types:
             raise TriggerException( 'invalid event type' )
         
     def matchElement(self, element):
@@ -489,13 +469,19 @@ class EventType( object ):
 class MessageEventType( EventType ):
     
     def __init__(self, config):
-        EventType.__init__(self, config)
+        super( MessageEventType, self ).__init__( config )
         
         self.source_entity = config['event_source']
-        self.content = False
+        self.content_type = False
+        self.content_handler = False
         
         if 'content_type' in config:
-            self.content = ParseTriggerContent(config)
+            self.content_type = config['content_type']
+            
+            if not self.content_type in content_types:
+                raise TriggerException( 'Invalid content type.' )
+            
+            self.content_handler = content_types[ self.content_type ]( self.value )
         
     def matchElement(self, element):
         log.msg( 'matchElement' )
@@ -532,8 +518,10 @@ class MessageEventType( EventType ):
                 return True
             
             return False
-        
-        if self.content:
-            return self.content.getContent().addCallback( getContentResponse ) 
+    
+        if self.content_handler:
+            return self.content_handler.getContent().addCallback( getContentResponse ) 
         
         return defer.succeed( True )
+    
+event_types = { 'message': MessageEventType, }

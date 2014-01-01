@@ -4,7 +4,7 @@ schedule=* * * * *
 repeat=True
 action_type=message
 action_message_type=groupchat
-action_recipient=unassigned@conference.bob.apelint.com
+action_recipient=unassigned@conference.xmpp.example.com
 action_content_type=text
 action_content_value=scheduled blah
 
@@ -14,19 +14,19 @@ delay=1
 repeat=True
 action_type=message
 action_message_type=groupchat
-action_recipient=unassigned@conference.bob.apelint.com
+action_recipient=unassigned@conference.xmpp.example.com
 action_content_type=text
 action_content_value=timed blah
 
 [trigger3]
 type=event
 event_type=message
-event_source=judar@bob.apelint.com/desktop
+event_source=john_doe@xmpp.example.com/desktop
 content_type=text
 content_value=blah
 action_type=message
 action_message_type=groupchat
-action_recipient=unassigned@conference.bob.apelint.com
+action_recipient=unassigned@conference.xmpp.example.com
 action_content_type=file
 action_content_value=blah.txt
 
@@ -36,7 +36,7 @@ xpath=/{jabber:client}message//{jabber:client}body = "yo"
 repeat=True
 action_type=message
 action_message_type=groupchat
-action_recipient=unassigned@conference.bob.apelint.com
+action_recipient=unassigned@conference.xmpp.example.com
 action_content_type=text
 action_content_value=spoon!
 
@@ -47,7 +47,7 @@ repeat=True
 filesystem_event_types=create,delete,modify
 action_type=message
 action_message_type=groupchat
-action_recipient=unassigned@conference.bob.apelint.com
+action_recipient=unassigned@conference.xmpp.example.com
 action_content_type=text
 action_content_value=fs event
 
@@ -58,6 +58,19 @@ repeat=True
 filesystem_event_types=delete,modify
 action_type=message
 action_message_type=groupchat
-action_recipient=unassigned@conference.bob.apelint.com
+action_recipient=unassigned@conference.xmpp.example.com
 action_content_type=text
 action_content_value=fs event 2
+
+[trigger7]
+type=event
+repeat=True
+event_type=presence
+event_source=john_doe@xmpp.example.com
+content_type=text
+content_value=available
+action_type=message
+action_message_type=chat
+action_recipient=john_doe@xmpp.example.com
+action_content_type=text
+action_content_value=presence event response

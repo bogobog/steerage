@@ -1,18 +1,32 @@
 from twisted.words.protocols.jabber import jid
 from twisted.python import log
 from wokkel import muc, data_form
-import logging
+import logging, ConfigParser
 
 from common import CommonClientManager
+
+MUC_CONFIG_FILE_DEFAULT = 'muc.ini'
 
 class CommonMucHandler( muc.MUCClient ):
     history_options = muc.HistoryOptions( maxStanzas = 0 )
 
-    def __init__(self, client ):
+    def __init__(self, client, muc_config = MUC_CONFIG_FILE_DEFAULT ):
         super( CommonMucHandler, self ).__init__()
 
         self.my_client = client
-        #self.rooms = []
+
+        config_parser = ConfigParser.ConfigParser()
+        config_parser.read( muc_config )
+
+        self.config = {}
+	
+        for section in config_parser.sections():
+            self.config[ section ] = dict( config_parser.items( section ) )
+
+        if 'general' in self.config and 'muc_domain' in self.config[ 'general' ]:
+            self.muc_domain = self.config[ 'general' ][ 'muc_domain' ]
+        else:
+            self.muc_domain = 'conference.' + self.my_client.domain
 
     def connectionInitialized(self):
         super( CommonMucHandler, self ).connectionInitialized()
@@ -20,6 +34,16 @@ class CommonMucHandler( muc.MUCClient ):
         self.xmlstream.addObserver("/message[@type='normal']/x[@xmlns='%s']/invite" % muc.NS_MUC_USER, self.receivedRoomInviteMessage )
         self.xmlstream.addObserver("/presence[@type='unavailable' and @to='%s']/x[@xmlns='%s']/status[@code='307']" % ( self.my_client.jid.full(), muc.NS_MUC_USER ), self.receivedRoomKickMessage )
         self.xmlstream.addObserver("/presence[@to='%s']/x[@xmlns='%s']/status[@code='110']" % ( self.my_client.jid.full(), muc.NS_MUC_USER ), self.roomJoined )
+
+        log.msg( self.config, level = logging.DEBUG )
+
+        if 'default_rooms' in self.config:
+            log.msg( self.config[ 'default_rooms' ], level = logging.DEBUG )
+            for room, value in self.config[ 'default_rooms' ].items():
+                log.msg( 'Default muc room: %s' % room, level = logging.DEBUG )
+                if value == 'True':
+                    log.msg( "Joining default room: %s %s" % ( '@'.join( [ room, self.muc_domain ] ), self.my_client.jid.user ) )
+                    self.join( jid.JID( '@'.join( [ room, self.muc_domain ] ) ), self.my_client.jid.user, historyOptions = muc.HistoryOptions( maxStanzas = 0 ) ).addErrback( log.err )
 
     def connectionLost(self, reason):
         log.msg( 'connectionLost', level = logging.DEBUG )
@@ -63,7 +87,7 @@ class CommonMucHandler( muc.MUCClient ):
 
             return self.getConfigureForm( room.entity_id.userhost() ).addCallback( configureRoom ).addErrback( log.err )
 
-        return self.join('conference.' + self.my_client.server, room, self.my_client.jid.user ).addCallback( roomJoined ).addErrback( log.err )
+        return self.join( self.muc_domain, room, self.my_client.jid.user ).addCallback( roomJoined ).addErrback( log.err )
 
     def receivedGroupChat(self, room, user, body):
         log.msg( 'received group chat', level = logging.DEBUG )

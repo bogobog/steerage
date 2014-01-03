@@ -1,7 +1,7 @@
 [general]
 user=bot
 password=password
+domain=example.com
 resource=bot
 server_ip=xmpp.example.com
 server_port=5222
-trigger_config=triggers.ini

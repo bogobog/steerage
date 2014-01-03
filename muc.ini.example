@@ -1,0 +1,6 @@
+[general]
+muc_domain=conference.example.com
+
+[default_rooms]
+room1=True
+room2=True

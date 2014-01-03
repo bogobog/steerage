@@ -98,11 +98,12 @@ class CommonClient( object ):
         self.user = self.config.get( 'general', 'user' )
         self.password = self.config.get( 'general', 'password' )
 
+	self.domain = self.config.get( 'general', 'domain' )
         self.resource = self.config.get( 'general', 'resource' )
         self.server = self.config.get( 'general', 'server_ip' )
         self.port = int( self.config.get( 'general', 'server_port' ) )
 
-        self.jid = jid.JID( self.user + '@' + self.server + "/" + self.resource )
+        self.jid = jid.JID( self.user + '@' + self.domain + "/" + self.resource )
         self.factory = CommonClientFactory( self )
         self.factory.streamManager.logTraffic = True
 

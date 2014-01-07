@@ -5,7 +5,6 @@ from wokkel.subprotocols import XMPPHandler
 from datetime import datetime
 from twisted.words.protocols.jabber import jid
 from twisted.words.xish import domish
-from lxml import etree
 import pyinotify, logging, re
 
 from plugins.inotify_handler import INotifyHandler
@@ -47,8 +46,7 @@ class TriggerHandler( XMPPHandler ):
         scheduled   = config_triggers.get( 'scheduled', [] )
         timed       = config_triggers.get( 'timed', [] )
         event       = config_triggers.get( 'event', [] )
-        xpath       = config_triggers.get( 'xpath', [] )
-        my_fs          = config_triggers.get( 'filesystem', [] )
+        my_fs       = config_triggers.get( 'filesystem', [] )
 
         log.msg( my_fs, level = logging.DEBUG )
 
@@ -60,9 +58,6 @@ class TriggerHandler( XMPPHandler ):
 
         for trigger in event:
             self.event_triggers.append( EventTrigger( self, trigger, event[ trigger ] ) )
-
-        for trigger in xpath:
-            self.xpath_triggers.append( XpathTrigger( self, trigger, xpath[ trigger ] ) )
 
         for trigger in my_fs:
             self.fs_triggers.append( FilesystemTrigger( self, trigger, my_fs[ trigger ] ) )
@@ -91,9 +86,6 @@ class TriggerHandler( XMPPHandler ):
             for event_type in utilized_event_types:
                 self.xmlstream.addObserver('/' + event_type, self.checkEvent, event_type = event_type )
 
-        if len( self.xpath_triggers ):
-            self.xmlstream.addObserver( '/*', self.checkXpathEvent )
-
     def checkEvent( self, element, event_type ):
         if not len( self.event_triggers ):
             return
@@ -108,22 +100,6 @@ class TriggerHandler( XMPPHandler ):
             if trigger.event_type == event_type and not trigger.check_running:
                 trigger.check_running = True
                 trigger.check( element ).addCallback( checkResponse )
-
-    def checkXpathEvent(self, element):
-        if not len( self.xpath_triggers ):
-            return
-
-        def checkResponse( response, trigger ):
-            log.msg( 'checkResponse: %s' % trigger.name, level = logging.DEBUG )
-            trigger.check_running = False
-            log.msg( response, level = logging.DEBUG )
-            if response:
-                trigger.run( element )
-
-        for trigger in self.xpath_triggers:
-            if not trigger.check_running:
-                trigger.check_running = True
-                trigger.check( element ).addCallback( checkResponse, trigger )
 
     def checkScheduled(self):
 
@@ -154,15 +130,6 @@ class TriggerHandler( XMPPHandler ):
                 trigger.check( None ).addCallback( checkResponse, trigger )
 
         reactor.callLater( 60, self.checkTimed )
-
-    def addXpathTrigger(self, trigger):
-        if not isinstance( trigger, XpathTrigger ):
-            raise TriggerException( 'trigger is not an XpathTrigger' )
-
-        trigger.parent = self
-        self.xpath_triggers.append( trigger )
-
-        return True
 
 class Trigger( object ):
 
@@ -298,30 +265,6 @@ class EventTrigger( Trigger ):
         self.ran = True
         return self.action.run( triggering_element = element, check_response = check_response )
 
-class XpathTrigger( Trigger ):
-
-    def __init__(self, handler, name, config):
-        log.msg( 'XpathTrigger: init', level = logging.DEBUG )
-        Trigger.__init__(self, handler, name, config)
-
-        self.xpath = unicode( config['xpath'] )
-        self.xquery = etree.ETXPath( config['xpath'] )
-
-    def check(self, element):
-        log.msg( 'XpathTrigger: check', level = logging.DEBUG )
-        if self.ran and not self.repeat:
-            return defer.succeed( False )
-
-        if not self.xquery( etree.XML( element.toXml() ) ):
-            return defer.succeed( False )
-
-        return defer.succeed( True )
-
-    def run(self, element):
-        log.msg( 'XpathTrigger: run', level = logging.DEBUG )
-        self.ran = True
-        return self.action.run()
-
 class FilesystemTrigger( Trigger ):
     filesystem_event_types = { 'create': pyinotify.IN_CREATE, 'delete': pyinotify.IN_DELETE, 'modify': pyinotify.IN_MODIFY, 'attrib': pyinotify.IN_ATTRIB }
 
@@ -343,7 +286,7 @@ class FilesystemTrigger( Trigger ):
         self.last_run = time.time()
         return self.action.run()
 
-TRIGGER_TYPES = { 'scheduled': ScheduledTrigger, 'timed': TimedTrigger, 'event': EventTrigger, 'xpath': XpathTrigger, 'filesystem': FilesystemTrigger, }
+TRIGGER_TYPES = { 'scheduled': ScheduledTrigger, 'timed': TimedTrigger, 'event': EventTrigger, 'filesystem': FilesystemTrigger, }
 
 class Action( object ):
 

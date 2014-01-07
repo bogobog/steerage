@@ -6,7 +6,7 @@ from datetime import datetime
 from twisted.words.protocols.jabber import jid
 from twisted.words.xish import domish
 from lxml import etree
-import pyinotify, logging
+import pyinotify, logging, re
 
 from plugins.inotify_handler import INotifyHandler
 from common import CommonClientManager
@@ -78,18 +78,23 @@ class TriggerHandler( XMPPHandler ):
 
     def connectionInitialized(self):
         log.msg( 'trigger_handler: connectionInitialized', level = logging.DEBUG )
+
+        utilized_event_types = []
         for trigger in self.event_triggers:
-            log.msg( 'init checkEvent', level = logging.DEBUG )
+            log.msg( 'init checkEvent %s' % trigger.name, level = logging.DEBUG )
             log.msg( trigger.event.type, level = logging.DEBUG )
 
-            if trigger.event.type in EVENT_TYPES:
-                self.xmlstream.addObserver('/' + trigger.event.type, self.checkEvent, trigger = trigger )
+            if not trigger.event.type in utilized_event_types and trigger.event_type in EVENT_TYPES:
+                utilized_event_types.append( trigger.event_type )
 
-        #for trigger in self.xpath_triggers:
+        if len( utilized_event_types ):
+            for event_type in utilized_event_types:
+                self.xmlstream.addObserver('/' + event_type, self.checkEvent, event_type = event_type )
+
         if len( self.xpath_triggers ):
             self.xmlstream.addObserver( '/*', self.checkXpathEvent )
 
-    def checkEvent(self, element, trigger):
+    def checkEvent( self, element, event_type ):
         if not len( self.event_triggers ):
             return
 
@@ -97,11 +102,12 @@ class TriggerHandler( XMPPHandler ):
             log.msg( 'checkResponse: %s' % trigger.name, level = logging.DEBUG )
             trigger.check_running = False
             if response:
-                trigger.run( element )
+                trigger.run( element, response )
 
-        if not trigger.check_running:
-            trigger.check_running = True
-            trigger.check( element ).addCallback( checkResponse )
+        for trigger in self.event_triggers:
+            if trigger.event_type == event_type and not trigger.check_running:
+                trigger.check_running = True
+                trigger.check( element ).addCallback( checkResponse )
 
     def checkXpathEvent(self, element):
         if not len( self.xpath_triggers ):
@@ -283,14 +289,14 @@ class EventTrigger( Trigger ):
             if not response:
                 return False
 
-            return True
+            return response
 
         return self.event.matchElement( element ).addCallback( matchElementResponse )
 
-    def run(self, element):
+    def run(self, element, check_response ):
         log.msg( 'EventTrigger: run', level = logging.DEBUG )
         self.ran = True
-        return self.action.run()
+        return self.action.run( triggering_element = element, check_response = check_response )
 
 class XpathTrigger( Trigger ):
 
@@ -350,8 +356,11 @@ class Action( object ):
 
         self.content_handler = CONTENT_TYPES[ self.content_type ]( self.trigger.config['action_content_value'] )
 
-    def run(self):
+    def run(self, *args, **kwargs):
         raise NotImplementedError
+
+class MessageActionExceptionNoTriggeringElement( Exception ):
+    pass
 
 class MessageAction( Action ):
 
@@ -359,17 +368,29 @@ class MessageAction( Action ):
         super( MessageAction, self ).__init__( trigger )
 
         self.recipient = self.trigger.config['action_recipient']
-        self.recipient_jid = jid.JID( self.recipient )
         self.message_type = self.trigger.config['action_message_type']
 
-    def run(self):
+    def run(self, *args, **kwargs):
         log.msg( 'MessageAction: run', level = logging.DEBUG )
 
+        if self.recipient == "##event_source##":
+            print kwargs.keys()
+
+            if not 'triggering_element' in kwargs:
+                raise MessageActionExceptionNoTriggeringElement()
+
+            triggering_element = kwargs[ 'triggering_element' ]
+            log.msg( 'Triggering Element: %s' % triggering_element, level = logging.DEBUG )
+
+            my_recipient_jid = jid.JID( triggering_element[ 'from' ] )
+        else:
+            my_recipient_jid = jid.JID( self.recipient )
+
         if self.message_type == "groupchat":
-            #muc_client = self.trigger.handler.my_parent.muc_client
+            log.msg( 'MessageAction Type: groupchat')
             muc_client = CommonClientManager.getHandler( 'muc', self.trigger.handler.my_client )
 
-            if not muc_client._getRoom( self.recipient_jid ):
+            if not muc_client._getRoom( my_recipient_jid ):
                 log.msg( 'not in room', level = logging.DEBUG )
                 return False
 
@@ -377,26 +398,18 @@ class MessageAction( Action ):
             log.msg( 'MessageAction: getContentResponse', level = logging.DEBUG )
             msg = domish.Element( (None, 'message') )
             msg['type'] = self.message_type
-            msg['to'] = self.recipient_jid.full()
+            msg['to'] = my_recipient_jid.full()
 
-            msg.addElement('body', None, response )
+            processed_response = response
+            if 'check_response' in kwargs:
+                print kwargs['check_response']
+                processed_response = response.format( **kwargs[ 'check_response' ].groupdict() )
+
+            log.msg( 'processed_response: %s' % processed_response )
+            msg.addElement('body', None, processed_response )
             self.trigger.handler.xmlstream.send( msg )
 
         self.content_handler.getContent().addCallback( getContentResponse )
-
-class FunctionAction( Action ):
-
-    def __init__(self, trigger):
-        super( FunctionAction, self ).__init__( trigger )
-
-        self.target_function = self.trigger.config['action_function']
-        self.args = self.trigger.config['action_args']
-
-    def run(self):
-        if len( self.args ):
-            self.target_function( self.trigger, *self.args )
-        else:
-            self.target_function( self.trigger )
 
 ACTION_TYPES = { 'message': MessageAction }
 
@@ -494,24 +507,22 @@ class MessageEventType( EventType ):
         log.msg( 'matchElement', level = logging.DEBUG )
         log.msg( 'name: %s' % element.name, level = logging.DEBUG )
         log.msg( 'type: %s' % self.type, level = logging.DEBUG )
-        if element.name != self.type:
-            return defer.succeed( False )
-
         log.msg( 'from: %s' % element['from'], level = logging.DEBUG )
         log.msg( 'source: %s' % self.source_entity, level = logging.DEBUG )
 
         from_jid = jid.JID( element['from'] )
 
-        if not self.source_entity == from_jid and not self.source_entity == from_jid.userhostJID():
+        if not self.source_entity == from_jid and not self.source_entity == from_jid.userhostJID() and not self.source_entity.full() == from_jid.host:
             return defer.succeed( False )
 
         def getContentResponse( response ):
             log.msg( 'getContentResponse', level = logging.DEBUG )
             log.msg( 'response: %s' % response, level = logging.DEBUG )
             log.msg( 'body: %s' % element.body, level = logging.DEBUG )
-            if response == str( element.body ):
+            response_match = re.match( response, str( element.body ) )
+            if response_match:
                 log.msg( 'matched', level = logging.DEBUG )
-                return True
+                return response_match
 
             return False
 
@@ -563,9 +574,10 @@ class PresenceEventType( EventType ):
             log.msg( 'getContentResponse', level = logging.DEBUG )
             log.msg( 'response: %s' % response, level = logging.DEBUG )
             log.msg( 'type: %s' % presence_type, level = logging.DEBUG )
-            if response == presence_type:
+            response_match = re.match( response, presence_type )
+            if response_match:
                 log.msg( 'matched', level = logging.DEBUG )
-                return True
+                return response_match
 
             return False
 

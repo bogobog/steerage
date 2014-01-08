@@ -5,4 +5,5 @@ __all__ = [ 'trigger_handler',
             'message_handler',
             'presence_handler',
             'roster_handler',
+            'example_handler',
           ]
